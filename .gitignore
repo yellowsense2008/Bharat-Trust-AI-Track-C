@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+venv311/
+.env
+
+# Environment variables
+.env
+.env.*
+
+# MacOS
+.DS_Store
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite3
+
+# Docker
+*.tar
+
+# IDE
+.vscode/
+.idea/
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+
+# Build files
+dist/
+build/
+
+# Node (if UI added later)
+node_modules/
+
+# Jupyter
+.ipynb_checkpoints/

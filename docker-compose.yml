@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+
+  db:
+    image: postgres:15
+    container_name: grievance_db
+    environment:
+      POSTGRES_USER: grievance_user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: grievance_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    container_name: grievance_backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    env_file:
+      - .env
+
+volumes:
+  postgres_data:
