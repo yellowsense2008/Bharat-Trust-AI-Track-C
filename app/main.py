@@ -12,6 +12,8 @@ from app.api.complaint_routes import router as complaint_router
 from app.api.department_routes import router as department_router
 from app.api.analytics_routes import router as analytics_router
 from app.api.lifecycle_routes import router as lifecycle_router
+from app.api.voice_routes import router as voice_router
+from app.api.chat_routes import router as chat_router
 
 
 app = FastAPI(
@@ -45,6 +47,8 @@ app.include_router(complaint_router)
 app.include_router(department_router)
 app.include_router(analytics_router)
 app.include_router(lifecycle_router)
+app.include_router(voice_router)
+app.include_router(chat_router)
 
 
 # Root endpoint
