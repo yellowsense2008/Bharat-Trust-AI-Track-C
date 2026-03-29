@@ -5,8 +5,10 @@ import asyncio
 
 from sqlalchemy.orm import Session
 
-from app.services.speech_service import transcribe_audio
+from app.services.speech_service import transcribe_audio, text_to_speech
 from app.services.complaint_ai_service import extract_complaint_details
+from app.services.chat_flow_service import process_message
+
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
@@ -16,6 +18,9 @@ from app.api.complaint_routes import create_complaint
 router = APIRouter(prefix="/voice", tags=["Voice"])
 
 
+# =========================================
+# 🎤 TRANSCRIBE ONLY
+# =========================================
 @router.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     temp_file = f"temp_{file.filename}"
@@ -24,7 +29,9 @@ async def transcribe(file: UploadFile = File(...)):
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        transcript = transcribe_audio(temp_file)
+        with open(temp_file, "rb") as f:
+            transcript = transcribe_audio(f.read())
+
         structured = extract_complaint_details(transcript)
 
         return {
@@ -37,6 +44,9 @@ async def transcribe(file: UploadFile = File(...)):
             os.remove(temp_file)
 
 
+# =========================================
+# 🧾 VOICE → COMPLAINT SUBMISSION
+# =========================================
 @router.post("/submit")
 async def voice_submit(
     file: UploadFile = File(...),
@@ -46,34 +56,34 @@ async def voice_submit(
     temp_file = f"temp_submit_{file.filename}"
 
     try:
-        # STEP 0: Save file
+        # Save file
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # STEP 1: Speech → Text
-        transcript = await asyncio.to_thread(transcribe_audio, temp_file)
+        with open(temp_file, "rb") as f:
+            audio_bytes = f.read()
 
-        # STEP 2: AI Extraction
+        # Speech → Text
+        transcript = await asyncio.to_thread(transcribe_audio, audio_bytes)
+
+        # AI Extraction
         ai_data = await asyncio.to_thread(extract_complaint_details, transcript)
 
-        # STEP 3: Safe fallback values
+        # Fallbacks
         title = ai_data.get("title") or "Voice Complaint"
         description = ai_data.get("description") or transcript
         ai_category = ai_data.get("category") or "Other"
 
-        # STEP 4: Create complaint payload
         complaint_data = ComplaintCreate(
             title=title,
             description=description,
-            category=ai_category  # pass AI category
+            category=ai_category
         )
 
-        # STEP 5: Create complaint
         result = await asyncio.to_thread(
             create_complaint, complaint_data, db, current_user
         )
 
-        # STEP 6: Handle normal complaint response
         if isinstance(result, dict) and "complaint" in result:
             complaint = result["complaint"]
 
@@ -82,19 +92,17 @@ async def voice_submit(
                 "complaint": {
                     "id": str(complaint.id),
                     "title": complaint.title,
-                    # 🔥 FORCE AI CATEGORY (FINAL FIX)
                     "category": ai_category,
                     "description": complaint.description,
                     "status": complaint.status
                 }
             }
 
-        # STEP 7: Handle auto-resolution / duplicate case
         return {
             "transcript": transcript,
             "message": result.get("message"),
             "auto_resolution": result.get("auto_resolution"),
-            "category": ai_category  # 🔥 also force here
+            "category": ai_category
         }
 
     except Exception as e:
@@ -103,3 +111,41 @@ async def voice_submit(
     finally:
         if os.path.exists(temp_file):
             os.remove(temp_file)
+
+
+# =========================================
+# 🔥 REAL-TIME VOICE CHAT (FINAL)
+# =========================================
+@router.post("/chat")
+async def voice_chat(file: UploadFile = File(...)):
+    try:
+        # 1. Read audio
+        audio_bytes = await file.read()
+
+        # 2. Speech → Text
+        text = transcribe_audio(audio_bytes)
+
+        if not text:
+            raise HTTPException(status_code=400, detail="Could not transcribe audio")
+
+        # 3. Chat flow
+        result = process_message(
+            session_id="voice_user",
+            message=text
+        )
+
+        # 4. Text → Speech (ElevenLabs)
+        tts_audio = await text_to_speech(result["reply"])
+
+        return {
+            "user_text": text,
+            "reply": result["reply"],
+            "audio": tts_audio.hex() if tts_audio else None,
+            "step": result.get("step"),
+            "completed": result.get("completed"),
+            "data": result.get("data"),
+            "complaint": result.get("complaint")
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
