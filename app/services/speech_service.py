@@ -4,7 +4,25 @@ import os
 import asyncio
 import edge_tts
 
-whisper_model = WhisperModel("base")
+# ── Lazy singleton ──────────────────────────────────────────────────────────
+# Do NOT load the model at import time.
+# Cloud Run must bind to $PORT within a few seconds; a blocking model load
+# here will cause the container health-check to time out and the deployment
+# to fail with "container failed to start and listen on the port".
+_whisper_model = None
+
+
+def _get_whisper_model() -> WhisperModel:
+    """Return the global Whisper model, loading it on first call."""
+    global _whisper_model
+    if _whisper_model is None:
+        # "base" is ~150 MB – reasonable for Cloud Run with enough memory
+        _whisper_model = WhisperModel(
+            "base",
+            device="cpu",
+            compute_type="int8",   # lower RAM, faster CPU inference
+        )
+    return _whisper_model
 
 
 def normalize_text(text: str) -> str:
@@ -31,9 +49,10 @@ def transcribe_audio(file_bytes: bytes) -> str:
             temp_audio.write(file_bytes)
             temp_audio_path = temp_audio.name
 
-        segments, _ = whisper_model.transcribe(
+        model = _get_whisper_model()   # lazy: loads on first call only
+        segments, _ = model.transcribe(
             temp_audio_path,
-            task="transcribe"
+            task="transcribe",
         )
 
         text = " ".join([seg.text for seg in segments]).strip()

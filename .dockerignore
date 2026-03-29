@@ -1,7 +1,44 @@
-venv
-__pycache__
-.git
-.env
-*.pyc
+# Python cache
+__pycache__/
+*.py[cod]
 *.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+venv311/
+.venv/
+env/
+
+# Development / test artifacts
+*.db
+*.sqlite3
+*.m4a
+*.mp3
+*.webm
+*.wav
+
+# Secrets – never bake into image
+.env
+.env.*
+
+# VCS
+.git/
+.gitignore
+
+# Docker files (not needed inside image)
+docker-compose.yml
+.dockerignore
+
+# Editor / OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python tooling
+*.egg-info/
+dist/
+build/
