@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.services.chat_flow_service import process_message
+from app.services.tts_service import generate_tts
 
 router = APIRouter(prefix="/chat", tags=["Chat Flow"])
 
@@ -38,9 +39,13 @@ class ChatMessageResponse(BaseModel):
     step: int
     completed: bool
     data: dict
+
     # ── New fields ────────────────────────────────────────────────────────────
     meta: MetaField
-    complaint: Optional[dict] = None   # populated only when completed == True
+    complaint: Optional[dict] = None
+
+    # 🔊 NEW FIELD
+    audio: Optional[str] = None
 
 
 # ─── Error response helper ────────────────────────────────────────────────────
@@ -67,11 +72,21 @@ def chat_message(body: ChatMessageRequest):
     Response always includes:
       reply, step, completed, data, meta { confidence, source }, complaint?
     """
+
     try:
+        # Process chat flow
         result = process_message(body.session_id, body.message)
+
+        # 🔊 Generate voice reply using Indic Parler-TTS
+        audio_base64 = generate_tts(result["reply"])
+
+        # Attach audio to response
+        result["audio"] = audio_base64
+
         return result
+
     except ValueError as exc:
         _error_response(str(exc), "VALIDATION_ERROR", status=422)
+
     except Exception as exc:
         _error_response(str(exc), "INTERNAL_ERROR", status=500)
-
