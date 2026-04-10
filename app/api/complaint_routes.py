@@ -139,7 +139,7 @@ def get_all_complaints(
     current_user: User = Depends(get_current_user)
 ):
 
-    if current_user.role != "admin":
+    if current_user.role.lower() != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
     complaints = db.query(Complaint).all()

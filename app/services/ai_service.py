@@ -1,7 +1,5 @@
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
-import numpy as np
+# sklearn and numpy are imported lazily inside detect_duplicate()
+# so this module adds zero cost to the container startup path.
 
 # ---------------- TRANSLATION SUPPORT ----------------
 
@@ -40,6 +38,11 @@ def categorize_complaint(text: str):
 # ---------------- LIGHTWEIGHT DUPLICATE DETECTION ----------------
 
 def detect_duplicate(new_text: str, existing_texts: list, threshold: float = 0.25):
+    # Deferred imports — sklearn takes ~500ms to import; only pay that cost
+    # when this function is actually called, not at server startup.
+    from sklearn.feature_extraction.text import TfidfVectorizer  # noqa: PLC0415
+    from sklearn.metrics.pairwise import cosine_similarity        # noqa: PLC0415
+    import numpy as np                                             # noqa: PLC0415
 
     if not existing_texts:
         return None

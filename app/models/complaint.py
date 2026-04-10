@@ -4,7 +4,6 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.core.database import Base
 
-
 class Complaint(Base):
     __tablename__ = "complaints"
 
@@ -26,6 +25,9 @@ class Complaint(Base):
     assigned_department = Column(String, nullable=True)
     ai_confidence = Column(Float, nullable=True)
     duplicate_of = Column(String, nullable=True)
+
+    # -------- ADMIN RESOLUTION --------
+    resolution = Column(Text, nullable=True)  # Free-text note written by admin
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

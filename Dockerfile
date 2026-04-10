@@ -1,31 +1,68 @@
-# ─── Stage: Production Image ───────────────────────────────────────────────────
+# ─── Production Dockerfile for FastAPI Voice API (Cloud Run) ────────────────
+#
+# Optimized for:
+#  - Fast startup
+#  - Small container size
+#  - Cloud Run compatibility
+#  - Non-root security
+#
+# Uses:
+#  - python:3.11-slim
+#  - gunicorn + uvicorn workers
+#  - PORT injected by Cloud Run
+# ───────────────────────────────────────────────────────────────────────────
+
 FROM python:3.11-slim
 
-# Prevent Python from writing .pyc files and buffer stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+# ─── Python runtime settings ───────────────────────────────────────────────
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Install system dependencies required by faster-whisper / ffmpeg
+# pip performance flags
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Cloud Run injects PORT automatically
+ENV PORT=8080
+
+# ─── Install system dependencies ───────────────────────────────────────────
+# ffmpeg → required for audio processing
+# curl → useful for container debugging
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
-        libgomp1 \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
+# ─── Application working directory ─────────────────────────────────────────
 WORKDIR /app
 
-# Copy and install Python dependencies first (layer-cache friendly)
+# ─── Install Python dependencies ───────────────────────────────────────────
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
-# 🔥 ADD THIS LINE
-RUN chmod -R 755 /app
-    
-RUN useradd --no-create-home --shell /bin/false appuser
+# ─── Copy application source code ──────────────────────────────────────────
+COPY app /app/app
+
+# ─── Create writable runtime directories (Cloud Run uses /tmp) ─────────────
+RUN mkdir -p /tmp/audio
+
+# ─── Create non-root user ──────────────────────────────────────────────────
+RUN useradd --no-create-home --shell /bin/false appuser \
+    && chown -R appuser:appuser /app /tmp
+
 USER appuser
 
-# Cloud Run injects $PORT at runtime (default 8080).
-# Use shell form so the variable is expanded at container start time.
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --log-level info
+# ─── Expose container port ─────────────────────────────────────────────────
+EXPOSE 8080
+
+# ─── Start FastAPI using Gunicorn ──────────────────────────────────────────
+# 1 worker is recommended for Cloud Run (horizontal scaling)
+CMD ["sh", "-c", "exec gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 1 \
+    --bind 0.0.0.0:${PORT} \
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile -"]

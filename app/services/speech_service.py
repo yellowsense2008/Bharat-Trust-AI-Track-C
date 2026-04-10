@@ -1,124 +1,232 @@
-from faster_whisper import WhisperModel
-import tempfile
+"""
+speech_service.py — Lightweight STT + TTS for the grievance voice pipeline.
+
+STT: Groq Whisper API (whisper-large-v3)
+     ✅ No local model
+     ✅ No torch / transformers
+     ✅ Fast real-time transcription
+     ✅ Multilingual (EN / HI / TA / KN / GU auto-detected)
+
+TTS: edge-tts
+     ✅ No local model
+     ✅ HTTPS-only
+     ✅ Returns raw MP3 bytes
+"""
+
+from __future__ import annotations
+
+import logging
 import os
-import asyncio
-import edge_tts
+import re
+import tempfile
+import unicodedata
 
-# ── Lazy singleton ──────────────────────────────────────────────────────────
-# Do NOT load the model at import time.
-# Cloud Run must bind to $PORT within a few seconds; a blocking model load
-# here will cause the container health-check to time out and the deployment
-# to fail with "container failed to start and listen on the port".
-_whisper_model = None
+from groq import Groq
+from deep_translator import GoogleTranslator
+
+logger = logging.getLogger(__name__)
 
 
-def _get_whisper_model() -> WhisperModel:
-    """Return the global Whisper model, loading it on first call."""
-    global _whisper_model
-    if _whisper_model is None:
-        # "base" is ~150 MB – reasonable for Cloud Run with enough memory
-        _whisper_model = WhisperModel(
-            "base",
-            device="cpu",
-            compute_type="int8",   # lower RAM, faster CPU inference
+def validate_startup() -> None:
+    """
+    Call this from the FastAPI lifespan handler.
+    Logs a WARNING (not a crash) if required env vars are absent,
+    so the container starts and health checks pass, but operators
+    can see the problem immediately in Cloud Run logs.
+    """
+    required = ["GROQ_API_KEY"]
+    missing = [k for k in required if not os.getenv(k)]
+    if missing:
+        logger.warning(
+            "⚠️  Missing environment variable(s): %s — "
+            "voice transcription will fail on first request. "
+            "Set them via: gcloud run services update <SERVICE> "
+            "--region asia-south1 --set-env-vars %s=<VALUE>",
+            ", ".join(missing),
+            "=", 
         )
-    return _whisper_model
+    else:
+        logger.info("✅ All required env vars present (GROQ_API_KEY).")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+VOICE_MAP = {
+    "en": "en-IN-NeerjaNeural",
+    "hi": "en-IN-NeerjaNeural",
+    "ta": "en-IN-NeerjaNeural",
+    "gu": "en-IN-NeerjaNeural",
+    "kn": "en-IN-NeerjaNeural",
+}
+
+# Lazy-initialised Groq client — avoids crash at import time if GROQ_API_KEY is missing
+_groq_client: Groq | None = None
 
 
-def normalize_text(text: str) -> str:
-    text = text.lower()
+def _get_groq_client() -> Groq:
+    """Return the Groq singleton, creating it on first call."""
+    global _groq_client
+    if _groq_client is None:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is not set in this container's environment. "
+                "Fix with: "
+                "gcloud run services update rbi-track-c-api "
+                "--region asia-south1 "
+                "--set-env-vars GROQ_API_KEY=<your-key>  "
+                "OR use --set-secrets for Secret Manager."
+            )
+        _groq_client = Groq(api_key=api_key)
+        logger.info("Groq client initialised successfully.")
+    return _groq_client
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _clean_for_tts(text: str) -> str:
+    """Sanitise text before sending to edge-tts."""
+    text = unicodedata.normalize("NFC", text)
+
+    text = re.sub(r"[\u0000-\u001f\u007f\u2028\u2029\ufeff]", " ", text)
 
     replacements = {
-        "پیمین": "payment",
-        "پےمنٹ": "payment",
-        "فیل": "fail",
-        "ہو گیا": "ho gaya",
-        "میرا": "mera",
-        "ہے": "hai"
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
     }
 
-    for k, v in replacements.items():
-        text = text.replace(k, v)
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
 
-    return text
+    return " ".join(text.split()).strip()
 
 
-def transcribe_audio(file_bytes: bytes) -> str:
+# ── Language Detection (Unicode based) ────────────────────────────────────────
+
+def detect_language(text: str) -> str:
+    """
+    Detect Indian language using unicode script ranges.
+    """
+
+    for char in text:
+        code = ord(char)
+
+        if 0x0A80 <= code <= 0x0AFF:
+            return "gu"
+
+        if 0x0900 <= code <= 0x097F:
+            return "hi"
+
+        if 0x0B80 <= code <= 0x0BFF:
+            return "ta"
+
+        if 0x0C80 <= code <= 0x0CFF:
+            return "kn"
+
+    return "en"
+
+
+# ── Translation Helper ────────────────────────────────────────────────────────
+
+def translate_text(text: str, target_lang: str) -> str:
+    """
+    Translate text into the target language script.
+    """
+
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_audio:
-            temp_audio.write(file_bytes)
-            temp_audio_path = temp_audio.name
+        if target_lang == "en":
+            return text
 
-        model = _get_whisper_model()   # lazy: loads on first call only
-        segments, _ = model.transcribe(
-            temp_audio_path,
-            task="transcribe",
-        )
+        translated = GoogleTranslator(
+            source="en",
+            target=target_lang
+        ).translate(text)
 
-        text = " ".join([seg.text for seg in segments]).strip()
+        return translated
 
-        os.remove(temp_audio_path)
-
-        # Normalize Hinglish
-        text = normalize_text(text)
-
+    except Exception as exc:
+        logger.warning("Translation failed: %s", exc)
         return text
 
-    except Exception as e:
-        print("Whisper error:", e)
-        return ""
 
+# ── Speech-to-Text ────────────────────────────────────────────────────────────
 
-def clean_text_for_tts(text: str) -> str:
-    import re
+def transcribe_audio(file_bytes: bytes) -> dict:
+    """
+    Transcribe raw audio bytes to text using Groq Whisper.
+    """
 
-    # Remove problematic unicode
-    for ch in [
-        "\u2028", "\u2029", "\u200b", "\u200c", "\u200d",
-        "\u200e", "\u200f", "\u202a", "\u202b", "\u202c",
-        "\u202d", "\u202e", "\ufeff",
-    ]:
-        text = text.replace(ch, " ")
+    tmp_path = None
 
-    text = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
-
-    # Keep ASCII only (safe)
-    text = text.encode("ascii", errors="ignore").decode("ascii")
-
-    text = re.sub(r"[\x00-\x1f\x7f]", " ", text)
-    text = re.sub(r" +", " ", text).strip()
-
-    return text
-
-
-async def text_to_speech(text: str) -> bytes:
     try:
-        text = clean_text_for_tts(text)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir="/tmp") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
 
-        print(f"📝 TTS text ({len(text)} chars): {text}")
+        with open(tmp_path, "rb") as audio_file:
+            transcription = _get_groq_client().audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3"
+            )
 
-        if not text:
-            print("⚠️ Empty text for TTS")
-            return None
+        text = transcription.text.strip()
 
-        voice = "en-IN-NeerjaNeural"
+        language = detect_language(text)
 
-        communicate = edge_tts.Communicate(text, voice)
+        logger.info("STT raw transcript → %s", text)
+        logger.info("🌍 Detected language → %s", language)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-            temp_path = f.name
+        return {
+            "text": text,
+            "language": language
+        }
 
-        await communicate.save(temp_path)
+    except Exception as exc:
+        logger.error("STT error: %s", exc)
+        return {"text": "", "language": "unknown"}
 
-        with open(temp_path, "rb") as f:
-            audio = f.read()
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
-        os.remove(temp_path)
 
-        print(f"✅ TTS audio generated: {len(audio)} bytes")
+# ── Text-to-Speech ────────────────────────────────────────────────────────────
 
-        return audio
+async def text_to_speech(text: str, language: str = "en") -> bytes | None:
+    """
+    Convert text to speech using edge-tts (Microsoft Neural voices).
+    Returns raw MP3 bytes or None on failure.
+    """
+    import edge_tts
 
-    except Exception as e:
-        print("❌ TTS ERROR:", e)
+    voice = VOICE_MAP.get(language, VOICE_MAP["en"])
+    clean_text = _clean_for_tts(text)
+
+    if not clean_text:
+        logger.warning("TTS received empty text after sanitisation")
         return None
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3", dir="/tmp") as tmp:
+            tmp_path = tmp.name
+
+        communicate = edge_tts.Communicate(clean_text, voice)
+        await communicate.save(tmp_path)
+
+        with open(tmp_path, "rb") as f:
+            audio_bytes = f.read()
+
+        logger.info("TTS produced %d bytes (voice=%s)", len(audio_bytes), voice)
+        return audio_bytes
+
+    except Exception as exc:
+        logger.error("TTS error: %s", exc)
+        return None
+
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)

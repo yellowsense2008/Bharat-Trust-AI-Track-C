@@ -1,17 +1,17 @@
-# Python cache
+# ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 
-# Virtual environments
+# ── Virtual environments ───────────────────────────────────────────────────────
 venv/
 venv311/
 .venv/
 env/
 
-# Development / test artifacts
+# ── Development / test artifacts ─────────────────────────────────────────────
 *.db
 *.sqlite3
 *.m4a
@@ -19,26 +19,33 @@ env/
 *.webm
 *.wav
 
-# Secrets – never bake into image
+# ── macOS metadata files (IMPORTANT: these confuse Cloud Build) ───────────────
+._*
+.DS_Store
+
+# ── Secrets — never bake into image ───────────────────────────────────────────
 .env
 .env.*
 
-# VCS
+# ── VCS ───────────────────────────────────────────────────────────────────────
 .git/
 .gitignore
 
-# Docker files (not needed inside image)
+# ── Docker files (not needed inside image) ────────────────────────────────────
 docker-compose.yml
 .dockerignore
 
-# Editor / OS
-.DS_Store
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Python tooling
+# ── Python packaging artifacts ────────────────────────────────────────────────
 *.egg-info/
 dist/
 build/
+
+# ── Test files ────────────────────────────────────────────────────────────────
+test_*.py
+*_test.py
