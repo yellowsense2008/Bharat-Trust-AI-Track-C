@@ -87,7 +87,10 @@ async def voice_submit(
     title = ai_data.get("title") or "Voice Complaint"
     description = ai_data.get("description") or transcript
 
-    complaint_data = ComplaintCreate(title=title, description=description)
+    complaint_data = ComplaintCreate(
+    title=title,
+    description=description + f"\n\nVoice Transcript: {transcript}"
+)
 
     result = await asyncio.to_thread(
         create_complaint, complaint_data, db, current_user

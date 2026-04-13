@@ -1,8 +1,9 @@
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Float
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Float, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.core.database import Base
+
 
 class Complaint(Base):
     __tablename__ = "complaints"
@@ -17,7 +18,8 @@ class Complaint(Base):
     description = Column(Text, nullable=False)
 
     # Lifecycle
-    status = Column(String, default="submitted")  # submitted → categorized → assigned → in_progress → resolved → closed
+    status = Column(String, default="submitted")  
+    # submitted → categorized → assigned → in_progress → resolved → closed
 
     # -------- AI ENRICHMENT FIELDS --------
     category = Column(String, nullable=True)
@@ -28,6 +30,14 @@ class Complaint(Base):
 
     # -------- ADMIN RESOLUTION --------
     resolution = Column(Text, nullable=True)  # Free-text note written by admin
+
+    # -------- AI RESOLUTION ENGINE --------
+    ai_suggested_resolution = Column(Text, nullable=True)
+    ai_resolution_confidence = Column(Float, nullable=True)
+    estimated_resolution_days = Column(Integer, nullable=True)
+
+    resolution_approved = Column(Boolean, default=False)
+    resolution_approved_by = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

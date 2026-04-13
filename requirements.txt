@@ -17,6 +17,7 @@ passlib[bcrypt]==1.7.4
 # ── AI / LLM services ───────────────────────────────────────────
 groq==0.23.0
 deep-translator==1.11.4
+sentence-transformers==3.3.1
 
 # ── Speech services ─────────────────────────────────────────────
 # STT handled by Groq Whisper API
@@ -26,9 +27,11 @@ edge-tts==6.1.12
 # ── HTTP clients ────────────────────────────────────────────────
 httpx==0.28.1
 aiohttp==3.11.16
+requests==2.32.3
 
 # ── Data utilities ──────────────────────────────────────────────
-numpy==2.2.4
+numpy==1.26.4
+faiss-cpu==1.9.0
 
 # ── Validation / schema ─────────────────────────────────────────
 pydantic==2.11.3

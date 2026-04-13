@@ -1,0 +1,55 @@
+{
+  "bank_name": "SBI",
+  "display_name": "State Bank of India",
+  "fields": [
+    {
+      "name": "customer_name",
+      "label": "Customer Name",
+      "type": "string",
+      "required": true,
+      "question": "What is your name?"
+    },
+    {
+      "name": "mobile_number",
+      "label": "Mobile Number",
+      "type": "string",
+      "required": true,
+      "question": "What is your mobile number?"
+    },
+    {
+      "name": "transaction_type",
+      "label": "Transaction Type",
+      "type": "string",
+      "required": true,
+      "question": "What type of transaction was this? (UPI, NEFT, RTGS, ATM, Debit Card, Credit Card, etc.)"
+    },
+    {
+      "name": "transaction_id",
+      "label": "Transaction ID",
+      "type": "string",
+      "required": false,
+      "question": "Do you have the transaction ID or reference number?"
+    },
+    {
+      "name": "transaction_date",
+      "label": "Transaction Date",
+      "type": "string",
+      "required": false,
+      "question": "When did this transaction happen?"
+    },
+    {
+      "name": "amount",
+      "label": "Amount",
+      "type": "number",
+      "required": false,
+      "question": "What was the transaction amount?"
+    },
+    {
+      "name": "complaint_description",
+      "label": "Complaint Description",
+      "type": "text",
+      "required": true,
+      "question": "Could you describe what exactly happened?"
+    }
+  ]
+}

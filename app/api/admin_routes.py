@@ -24,10 +24,11 @@ from app.core.security import get_current_user
 from app.models.complaint import Complaint
 from app.models.user import User
 from app.schemas.complaint_schema import AdminComplaintUpdate, AdminComplaintDetail
-
+from app.services.resolution_api_endpoints import router as resolution_router
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
+router.include_router(resolution_router)
 
 # ── Allowed status values ──────────────────────────────────────────────────────
 
@@ -156,3 +157,5 @@ def update_complaint(
     db.refresh(complaint)
 
     return complaint
+
+

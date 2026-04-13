@@ -8,6 +8,7 @@ from app.core.security import get_current_user
 from app.models.complaint import Complaint
 from app.models.user import User
 from app.schemas.complaint_schema import ComplaintCreate, ComplaintResponse
+from app.services.resolution_ai_service import generate_resolution
 
 from app.services.ai_service import (
     categorize_complaint,
@@ -16,6 +17,7 @@ from app.services.ai_service import (
     calculate_priority,
     translate_to_english
 )
+from app.services.language_detector import detect_language
 
 from app.services.response_service import generate_auto_response
 from app.services.known_issue_service import detect_known_issue
@@ -59,6 +61,10 @@ def create_complaint(
     # ---------------- COMBINE TEXT ----------------
     combined_text = f"{new_complaint.title} {new_complaint.description}"
 
+    # ---------------- DETECT LANGUAGE ----------------
+    detected_language = detect_language(combined_text)
+    print(f"[ComplaintCreation] Detected language: {detected_language}")
+
     # ---------------- TRANSLATE TO ENGLISH ----------------
     translated_text = translate_to_english(combined_text)
 
@@ -83,8 +89,24 @@ def create_complaint(
     new_complaint.assigned_department = assign_department(category)
 
     # ---------------- PRIORITY SCORING ----------------
+    # ---------------- PRIORITY SCORING ----------------
     priority = calculate_priority(translated_text, category)
     new_complaint.priority_score = priority
+
+# ---------------- AI RESOLUTION SUGGESTION ----------------
+    try:
+        resolution_result = generate_resolution(
+            complaint_text=translated_text,
+            category=new_complaint.category,
+            language=detected_language  # Pass detected language
+        )
+
+        new_complaint.ai_suggested_resolution = resolution_result.get("suggested_resolution")
+        new_complaint.ai_resolution_confidence = resolution_result.get("confidence")
+        new_complaint.estimated_resolution_days = resolution_result.get("estimated_resolution_days")
+
+    except Exception as e:
+        print("AI resolution generation failed:", e)
 
     db.commit()
     db.refresh(new_complaint)
@@ -112,8 +134,14 @@ def create_complaint(
 
     auto_response = generate_auto_response(new_complaint)
 
+    # ---- CITIZEN RESPONSE (NO AI RESOLUTION) ----
     return {
-        "complaint": new_complaint,
+        "reference_id": new_complaint.reference_id,
+        "message": "Your complaint has been registered successfully.",
+        "department": new_complaint.assigned_department,
+        "priority": new_complaint.priority_score,
+        "category": new_complaint.category,
+        "expected_resolution_time": f"{new_complaint.estimated_resolution_days} days" if new_complaint.estimated_resolution_days else "To be determined",
         "auto_response": auto_response
     }
 

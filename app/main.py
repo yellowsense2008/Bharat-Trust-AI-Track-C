@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # ── Routers (no heavy ML code in any of these at import time) ─────────────
 from app.api.auth_routes import router as auth_router
 from app.api.complaint_routes import router as complaint_router
+from app.api.citizen_routes import router as citizen_router
 from app.api.department_routes import router as department_router
 from app.api.analytics_routes import router as analytics_router
 from app.api.lifecycle_routes import router as lifecycle_router
@@ -35,6 +36,7 @@ from app.api.chat_routes import router as chat_router
 from app.api.admin_routes import router as admin_router
 from app.api.status_routes import router as status_router
 from app.api.conversation_routes import router as conversation_router
+from app.services.resolution_ai_service import preload
 
 # ── DB (fast — engine creation, no I/O until first query) ────────────────
 from app.core.database import engine, Base
@@ -74,6 +76,9 @@ async def lifespan(app: FastAPI):
         logger.error("❌ DB init failed: %s", exc)
         # Don't re-raise — allow container to start; DB errors surface per-request
 
+    # 3. Preload AI models
+    preload()
+
     logger.info(
         "🚀 Server ready — listening on port %s",
         os.getenv("PORT", "8080"),
@@ -90,7 +95,6 @@ app = FastAPI(
     description="AI-powered citizen grievance management system.",
     lifespan=lifespan,
 )
-
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -103,6 +107,7 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(complaint_router)
+app.include_router(citizen_router)
 app.include_router(department_router)
 app.include_router(analytics_router)
 app.include_router(lifecycle_router)
