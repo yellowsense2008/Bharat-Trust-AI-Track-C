@@ -77,7 +77,24 @@ async def lifespan(app: FastAPI):
         logger.error("❌ DB init failed: %s", exc)
         # Don't re-raise — allow container to start; DB errors surface per-request
 
-    # 3. Preload AI models
+    # 3. Seed default users
+    try:
+        from app.core.database import SessionLocal
+        from app.models.user import User
+        from app.core.security import hash_password
+        db = SessionLocal()
+        for email, name, role, password in [
+            ("admin@grievance.com", "Admin", "admin", "admin@123"),
+            ("citizen@grievance.com", "Test Citizen", "citizen", "citizen@123")
+        ]:
+            if not db.query(User).filter(User.email == email).first():
+                db.add(User(name=name, email=email, password_hash=hash_password(password), role=role, is_active=True))
+                logger.info(f"✅ Created default user: {email}")
+        db.commit()
+        db.close()
+    except Exception as e:
+        logger.warning(f"⚠️ Seed failed: {e}")
+    # 4. Preload AI models
     preload()
 
     logger.info(

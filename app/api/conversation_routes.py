@@ -11,6 +11,8 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.complaint_schema import ComplaintCreate
+from app.services.tts_service import generate_tts
+from app.services.language_detector import detect_language
 from app.services.conversation_service import (
     start_conversation,
     continue_conversation,
@@ -64,9 +66,13 @@ def start_chat(
     try:
         ai_response = start_conversation(current_user.id, request.message)
         
+        # Generate TTS for AI response
+        detected_lang = detect_language(request.message)
+        audio = generate_tts(ai_response, detected_lang) if ai_response else None
         return {
             "session_id": str(current_user.id),
             "ai_response": ai_response,
+            "audio": audio,
             "conversation_complete": False
         }
     
@@ -126,14 +132,17 @@ def send_message(
                 "conversation_complete": True,
                 "ai_response": f"✅ Your complaint has been successfully filed!\n\n📋 Your Reference ID: {ref_id}\n\nYou can track your complaint status using this ID. Our team will review your complaint and get back to you soon.",
                 "reference_id": ref_id,
-                "complaint_id": str(complaint['id']),
+                "complaint_id": complaint.get('reference_id', 'N/A'),
                 "show_reference_prominently": True  # ✅ Signal frontend to show this ID
             }
         
         # Conversation continues
+        detected_lang = detect_language(request.message)
+        audio = generate_tts(result, detected_lang) if isinstance(result, str) else None
         return {
             "conversation_complete": False,
-            "ai_response": result
+            "ai_response": result,
+            "audio": audio
         }
     
     except HTTPException:

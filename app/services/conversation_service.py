@@ -10,7 +10,7 @@ from typing import Dict, Optional, List
 import google.generativeai as genai
 
 # Initialize Gemini
-genai.configure()
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 MODEL_NAME = "gemini-2.5-flash"
 
 conversation_sessions: Dict[int, Dict] = {}
@@ -83,9 +83,19 @@ def normalize_bank_name(text: str) -> str:
 
 def detect_bank(text: str) -> Optional[str]:
     """Detect bank name from user message."""
-    return normalize_bank_name(text)
+    text_lower = text.lower().strip()
+    for canonical_name, keywords in BANK_MAPPING.items():
+        if any(kw in text_lower for kw in keywords):
+            return canonical_name
+    return None
 
 SYSTEM_PROMPT = """You are an empathetic AI assistant helping citizens file banking complaints.
+
+CRITICAL LANGUAGE RULE: Always respond in the SAME language the user is writing in.
+- If user writes in Hindi, respond in Hindi
+- If user writes in English, respond in English
+- If user mixes Hindi and English, respond in Hindi
+- Never switch languages mid-conversation
 
 Your responsibilities:
 1. COMFORT FIRST: Detect emotional distress and respond with genuine empathy
