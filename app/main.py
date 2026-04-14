@@ -43,6 +43,7 @@ from app.core.database import engine, Base
 
 # Import model classes so SQLAlchemy registers them with Base.metadata
 from app.models import user, complaint  # noqa: F401
+from app.models import conversation_session  # noqa: F401
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,7 +99,12 @@ app = FastAPI(
 # ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "https://rbi-track-c-api-2333988202.asia-south1.run.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

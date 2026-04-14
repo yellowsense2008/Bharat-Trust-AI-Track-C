@@ -88,9 +88,9 @@ async def voice_submit(
     description = ai_data.get("description") or transcript
 
     complaint_data = ComplaintCreate(
-    title=title,
-    description=description + f"\n\nVoice Transcript: {transcript}"
-)
+        title=title,
+        description=description + f"\n\nVoice Transcript: {transcript}"
+    )
 
     result = await asyncio.to_thread(
         create_complaint, complaint_data, db, current_user
@@ -125,7 +125,6 @@ async def voice_submit(
 # =========================================
 @router.post("/chat")
 async def voice_chat(file: UploadFile = File(...)):
-
     try:
         # 1. Read audio
         audio_bytes = await file.read()
@@ -141,10 +140,10 @@ async def voice_chat(file: UploadFile = File(...)):
 
         # 3. Chat flow
         chat_result = process_message(
-        session_id="voice_user",
-        message=text,
-        language=language
-)
+            session_id="voice_user",
+            message=text,
+            language=language
+        )
 
         reply_en = chat_result["reply"]
 
@@ -177,3 +176,29 @@ async def voice_chat(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =========================================
+# 🔊 TEXT-TO-SPEECH SYNTHESIS
+# =========================================
+@router.post("/synthesize")
+async def synthesize(request: dict):
+    """Text-to-Speech synthesis using HuggingFace AI4Bharat."""
+    from app.services.tts_service import generate_tts
+    
+    text = request.get("text", "")
+    language = request.get("language", "hi")
+    
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    audio_base64 = generate_tts(text, language)
+    
+    if not audio_base64:
+        raise HTTPException(status_code=500, detail="TTS generation failed")
+    
+    return {
+        "audio": audio_base64,
+        "language": language,
+        "text": text
+    }

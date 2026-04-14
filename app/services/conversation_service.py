@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Optional, List
-from groq import Groq
+import google.generativeai as genai
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Initialize Gemini
+genai.configure()
+MODEL_NAME = "gemini-2.5-flash"
 
 conversation_sessions: Dict[int, Dict] = {}
 
@@ -64,26 +66,20 @@ BANK_MAPPING = {
     "indusind": ["indusind", "indusind bank"],
 }
 
-def normalize_bank_name(text: str) -> Optional[str]:
-    """Normalize user input to canonical bank name.
-    
-    Examples:
-        'SBI' -> 'sbi'
-        'State Bank of India' -> 'sbi'
-        'HDFC' -> 'hdfc'
-        'Kotak Mahindra' -> 'kotak'
-    """
+def normalize_bank_name(text: str) -> str:
+    """Normalize user input to canonical bank name (accept ANY bank)."""
     text_lower = text.lower().strip()
     
     for canonical_name, keywords in BANK_MAPPING.items():
         if any(kw in text_lower for kw in keywords):
             return canonical_name
     
-    # Check if user said "other" or "other bank"
     if "other" in text_lower:
         return "other"
     
-    return None
+    # Accept any bank name (even if unknown)
+    normalized = ''.join(c for c in text_lower if c.isalnum() or c == ' ')
+    return normalized.strip().replace(' ', '_').lower() or "unknown_bank"
 
 def detect_bank(text: str) -> Optional[str]:
     """Detect bank name from user message."""
@@ -172,7 +168,7 @@ def detect_emotion(text: str) -> Optional[str]:
     return None
 
 def call_groq_llm(conversation_history: list, user_message: str, current_form: dict, form_config: Dict, required_fields: list) -> dict:
-    """Call Groq LLM to process conversation and extract data intelligently."""
+    """Call Gemini LLM to process conversation and extract data intelligently."""
     
     missing_required = [field for field in required_fields if current_form.get(field) is None]
     
@@ -198,7 +194,7 @@ Current form state:
 Missing REQUIRED fields: {', '.join(missing_required) if missing_required else 'None - all required fields collected!'}
 
 Recent conversation:
-{json.dumps(conversation_history[-3:], indent=2)}
+{json.dumps(conversation_history[-6:], indent=2)}
 
 INSTRUCTIONS:
 1. Extract ALL possible information from the user's message (names, numbers, amounts, dates, transaction types, descriptions, etc.)
@@ -209,17 +205,17 @@ INSTRUCTIONS:
 Respond ONLY with valid JSON."""
     
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=500
+        model = genai.GenerativeModel(
+            model_name=MODEL_NAME,
+            system_instruction=SYSTEM_PROMPT,
+            generation_config={
+                "temperature": 0.7,
+                "max_output_tokens": 500
+            }
         )
         
-        content = response.choices[0].message.content.strip()
+        response = model.generate_content(user_prompt)
+        content = response.text.strip()
         
         # Extract JSON from markdown code blocks if present
         if "```json" in content:
@@ -230,7 +226,7 @@ Respond ONLY with valid JSON."""
         return json.loads(content)
     
     except Exception as e:
-        print(f"Groq LLM error: {e}")
+        print(f"Gemini LLM error: {e}")
         # Fallback response
         if missing_required:
             next_field = missing_required[0]
@@ -268,7 +264,7 @@ def start_conversation(user_id: int, initial_text: str) -> str:
         if emotion:
             empathy = "I understand this must be stressful for you. Don't worry — I'll help you resolve this.\n\n"
         
-        response = f"{empathy}Which bank was this transaction from?\n\n1️⃣ SBI (State Bank of India)\n2️⃣ HDFC Bank\n3️⃣ ICICI Bank\n4️⃣ Axis Bank\n🔟 Other Bank\n\nYou can simply type the bank name."
+        response = f"{empathy}Which bank was this transaction from?\n\nYou can just type the bank name."
         
         conversation_sessions[user_id]["history"].append({"role": "assistant", "content": response})
         return response
@@ -336,7 +332,7 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
         detected_bank = detect_bank(user_answer)
         
         if not detected_bank:
-            response = "I didn't catch that. Please choose from:\n\n1️⃣ SBI\n2️⃣ HDFC Bank\n3️⃣ ICICI Bank\n4️⃣ Axis Bank\n🔟 Other Bank\n\nJust type the bank name."
+            response = "I didn't catch that. Which bank was this transaction from? Just type the bank name."
             session["history"].append({"role": "assistant", "content": response})
             return response
         
