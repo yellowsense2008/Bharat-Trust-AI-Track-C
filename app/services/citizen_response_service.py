@@ -90,3 +90,27 @@ def simplify_resolution(resolution_text: str) -> str:
         return "Your complaint has been resolved. The bank will contact you shortly with further details."
     
     return result.strip()
+
+
+def get_citizen_friendly_resolution(full_resolution: dict) -> dict:
+    """
+    Filter admin resolution to show ONLY citizen-relevant fields.
+    
+    Admin sees: title, resolution, scores, references, timeline, etc.
+    Citizen sees: title, resolution, expected_days only
+    """
+    return {
+        "reference_id": full_resolution.get("reference_id"),
+        "complaint_title": full_resolution.get("title"),
+        "resolution": simplify_resolution(full_resolution.get("resolution", "")),
+        "expected_days": extract_timeline_days(full_resolution.get("timeline", "")),
+        "status": "Your complaint is being processed"
+    }
+
+def extract_timeline_days(timeline_text: str) -> int:
+    """Extract maximum days from timeline text."""
+    import re
+    matches = re.findall(r'(\d+)\s*(?:working\s*)?days?', timeline_text.lower())
+    if matches:
+        return max(int(m) for m in matches)
+    return 7  # Default fallback

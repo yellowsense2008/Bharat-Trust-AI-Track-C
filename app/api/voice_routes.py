@@ -1,5 +1,6 @@
 import asyncio
 import os
+import base64
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -156,18 +157,20 @@ async def voice_chat(file: UploadFile = File(...)):
         print("CHAT REPLY:", reply_local)
 
         # 5. Generate TTS
-        tts_audio = await text_to_speech(reply_local, language)
-
-        if tts_audio:
-            print("TTS BYTES:", len(tts_audio))
+        from app.services.tts_service import generate_tts
+        
+        tts_audio_base64 = generate_tts(reply_local, language)
+        
+        if tts_audio_base64:
+            print("TTS SUCCESS")
         else:
-            print("TTS FAILED")
+            print("TTS FAILED - will return text only")
 
         return {
             "user_text": text,
             "language": language,
             "reply": reply_local,
-            "audio": tts_audio.hex() if tts_audio else None,
+            "audio": tts_audio_base64,  # ✅ Returns base64 string (can be played by frontend)
             "step": chat_result.get("step"),
             "completed": chat_result.get("completed"),
             "data": chat_result.get("data"),
@@ -176,6 +179,7 @@ async def voice_chat(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # =========================================

@@ -18,6 +18,7 @@ from app.services.conversation_service import (
 )
 from app.services.status_service import get_complaint_status
 from app.api.complaint_routes import create_complaint
+from app.models.complaint import Complaint  # ✅ ADD THIS
 
 router = APIRouter(prefix="/conversation", tags=["Conversation"])
 
@@ -119,10 +120,14 @@ def send_message(
                 current_user=current_user
             )
             
+            ref_id = complaint['reference_id']
+            
             return {
                 "conversation_complete": True,
-                "ai_response": f"Thank you! Your complaint has been successfully filed. Your reference number is {complaint['reference_id']}. You can track its status anytime.",
-                "reference_id": complaint['reference_id']
+                "ai_response": f"✅ Your complaint has been successfully filed!\n\n📋 Your Reference ID: {ref_id}\n\nYou can track your complaint status using this ID. Our team will review your complaint and get back to you soon.",
+                "reference_id": ref_id,
+                "complaint_id": str(complaint['id']),
+                "show_reference_prominently": True  # ✅ Signal frontend to show this ID
             }
         
         # Conversation continues
@@ -151,3 +156,36 @@ def get_session(
         "form_state": session["form"],
         "conversation_length": len(session["history"])
     }
+
+@router.get("/resolution/{reference_id}")
+def get_resolution_for_user(
+    reference_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get FILTERED resolution for user (only relevant fields)."""
+    from app.services.citizen_response_service import get_citizen_friendly_resolution
+    
+    complaint = db.query(Complaint).filter(
+        Complaint.reference_id == reference_id,
+        Complaint.user_id == current_user.id  # ✅ User can only see own complaint
+    ).first()
+    
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    
+    if not complaint.resolution:
+        return {
+            "status": "UNDER_REVIEW",
+            "message": "Your complaint is being reviewed. Check back soon."
+        }
+    
+    # Filter to show only relevant fields
+    filtered = get_citizen_friendly_resolution({
+        "reference_id": complaint.reference_id,
+        "title": complaint.title,
+        "resolution": complaint.resolution,
+        "timeline": complaint.resolution  # Extract timeline from resolution text
+    })
+    
+    return filtered

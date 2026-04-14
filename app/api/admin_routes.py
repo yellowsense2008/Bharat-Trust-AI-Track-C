@@ -25,6 +25,7 @@ from app.models.complaint import Complaint
 from app.models.user import User
 from app.schemas.complaint_schema import AdminComplaintUpdate, AdminComplaintDetail
 from app.services.resolution_api_endpoints import router as resolution_router
+from app.services.resolution_ai_service import generate_resolution as generate_resolution_for_complaint
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -93,6 +94,45 @@ def get_complaint_detail(
 
     return complaint
 
+@router.get("/complaints/{complaint_id}/resolution", response_model=dict)
+def get_or_generate_resolution(
+    complaint_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get resolution for complaint (auto-generates if not exists).
+    
+    Access: admin only.
+    """
+    _require_admin(current_user)
+    
+    complaint = db.query(Complaint).filter(Complaint.id == complaint_id).first()
+    
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+    
+    # If already has resolution, return it
+    if complaint.resolution:
+        return {
+            "resolution": complaint.resolution,
+            "status": "existing"
+        }
+    
+    # Auto-generate resolution
+    try:
+        resolution = generate_resolution_for_complaint(complaint)
+        complaint.resolution = resolution
+        complaint.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(complaint)
+        
+        return {
+            "resolution": resolution,
+            "status": "generated"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate resolution: {str(e)}")
 
 # ── PATCH /admin/complaints/{complaint_id} ────────────────────────────────────
 

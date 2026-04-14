@@ -172,99 +172,120 @@ def call_groq_llm(conversation_history: list, user_message: str, current_form: d
     
     missing_required = [field for field in required_fields if current_form.get(field) is None]
     
-    # Build field descriptions
+    # Build field descriptions with DETAILED guidance
     field_info = []
     for field_config in form_config["fields"]:
         field_name = field_config["name"]
         field_label = field_config["label"]
+        field_type = field_config.get("type", "text")  # NEW: Use field type
         is_required = "REQUIRED" if field_config["required"] else "optional"
         current_value = current_form.get(field_name)
         status = f"✓ {current_value}" if current_value else "missing"
-        field_info.append(f"  - {field_name} ({field_label}) [{is_required}]: {status}")
+        field_info.append(f"  - {field_name} ({field_label}) [Type: {field_type}] [{is_required}]: {status}")
     
     fields_text = "\n".join(field_info)
     
-    user_prompt = f"""Bank: {form_config['display_name']}
+    # Get next missing field with its question
+    next_field_question = ""
+    if missing_required:
+        next_missing = missing_required[0]
+        next_field_question = get_field_question(form_config, next_missing)
+    
+    user_prompt = f"""You are helping fill out a {form_config['display_name']} complaint form.
 
-User message: "{user_message}"
-
-Current form state:
+FORM FIELDS DEFINITION:
 {fields_text}
 
-Missing REQUIRED fields: {', '.join(missing_required) if missing_required else 'None - all required fields collected!'}
+Current user message: "{user_message}"
 
-Recent conversation:
-{json.dumps(conversation_history[-6:], indent=2)}
+CURRENT FORM STATUS:
+{json.dumps(current_form, indent=2)}
 
-INSTRUCTIONS:
-1. Extract ALL possible information from the user's message (names, numbers, amounts, dates, transaction types, descriptions, etc.)
-2. If user shows emotion, provide brief empathy
-3. If required fields are missing, ask for ONE field naturally
-4. When all required fields are filled, set is_complete to true
+MISSING REQUIRED FIELDS: {', '.join(missing_required) if missing_required else 'NONE - ALL FIELDS COMPLETE!'}
 
-Respond ONLY with valid JSON."""
+IF FIELDS MISSING, NEXT QUESTION SHOULD BE: "{next_field_question}"
+
+RULES FOR THIS BANK FORM:
+1. Extract data EXACTLY into the field names defined above
+2. Match user data to the SPECIFIC fields in this form
+3. Ask for ONE missing field at a time using natural conversational language
+4. When ALL required fields are filled, set is_complete to true
+
+Respond ONLY with valid JSON in this format:
+{{
+  "empathy_message": "short empathetic response if user is distressed, else empty string",
+  "extracted_data": {{"field_name": "value", ...}},
+  "next_question": "natural conversational question for ONE missing field, or empty if complete",
+  "is_complete": false
+}}"""
     
     try:
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
             system_instruction=SYSTEM_PROMPT,
-            generation_config={
-                "temperature": 0.7,
-                "max_output_tokens": 500
-            }
+            generation_config={"temperature": 0.7, "max_output_tokens": 500}
         )
-        
         response = model.generate_content(user_prompt)
         content = response.text.strip()
         
-        # Extract JSON from markdown code blocks if present
+        # Parse JSON
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0].strip()
         elif "```" in content:
             content = content.split("```")[1].split("```")[0].strip()
         
-        return json.loads(content)
+        # Try to extract JSON if wrapped in other text
+        if '{' in content and '}' in content:
+            start = content.index('{')
+            end = content.rindex('}') + 1
+            content = content[start:end]
+        
+        parsed = json.loads(content)
+        print(f"[Gemini OK] extracted={parsed.get('extracted_data')}, next_q={parsed.get('next_question')}")
+        return parsed
     
     except Exception as e:
         print(f"Gemini LLM error: {e}")
-        # Fallback response
+        print(f"Raw content was: {content[:200] if 'content' in dir() else 'N/A'}")
         if missing_required:
             next_field = missing_required[0]
             question = get_field_question(form_config, next_field)
-            return {
-                "empathy_message": "",
-                "extracted_data": {},
-                "next_question": question,
-                "is_complete": False
-            }
-        return {
-            "empathy_message": "",
-            "extracted_data": {},
-            "next_question": "Could you please provide more details?",
-            "is_complete": False
-        }
+            return {"empathy_message": "", "extracted_data": {}, "next_question": question, "is_complete": False}
+        return {"empathy_message": "", "extracted_data": {}, "next_question": "Could you please provide more details?", "is_complete": False}
 
-def start_conversation(user_id: int, initial_text: str) -> str:
-    """Initialize conversation session and respond to first message."""
+def start_conversation(user_id: int, initial_text: str, language: str = None) -> str:
+    """Start conversation with language tracking."""
     
     emotion = detect_emotion(initial_text)
     
     # Detect bank from initial message
     detected_bank = detect_bank(initial_text)
+
+    # Import and detect language properly
+    from app.services.language_detector import detect_language, should_switch_language
     
-    # If no bank detected, ask user to select
+    # If language not provided, detect it
+    if not language:
+        language = detect_language(initial_text)
+    
+    # Store detected language in session (will be maintained throughout)
+    detected_language = language
+    
+    # ALWAYS show bank selection form first (good UX)
     if not detected_bank:
         conversation_sessions[user_id] = {
             "awaiting_bank_selection": True,
             "history": [{"role": "user", "content": initial_text}],
-            "emotion_detected": emotion
+            "emotion_detected": emotion,
+            "detected_language": language,  # ✅ Track language from start
+            "language_locked": False  # Only lock after confirmation
         }
         
         empathy = ""
         if emotion:
-            empathy = "I understand this must be stressful for you. Don't worry — I'll help you resolve this.\n\n"
+            empathy = "I understand this must be frustrating. Don't worry — I'm here to help.\n\n"
         
-        response = f"{empathy}Which bank was this transaction from?\n\nYou can just type the bank name."
+        response = f"{empathy}Which bank was your transaction with?\n\nJust type the bank name (e.g., SBI, HDFC, ICICI)"
         
         conversation_sessions[user_id]["history"].append({"role": "assistant", "content": response})
         return response
@@ -325,6 +346,21 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
     if not session:
         return {"error": "Session not found. Please start a new conversation."}
     
+    # ✅ ADD THIS: Prevent language switching
+    from app.services.language_detector import detect_language, should_switch_language
+    
+    current_language = session.get("detected_language", "en")
+    
+    # Check if we should switch language
+    if should_switch_language(current_language, user_answer):
+        # User clearly switched to different language
+        # Log it but continue in original language for now
+        print(f"User may have switched languages. Detected: {detect_language(user_answer)}, Current: {current_language}")
+        # OPTIONAL: You could switch here if you want to support multi-language in same session
+        # For now, we keep using the detected language
+    
+    # ✅ END OF ADDITION
+
     session["history"].append({"role": "user", "content": user_answer})
     
     # Handle bank selection if awaiting

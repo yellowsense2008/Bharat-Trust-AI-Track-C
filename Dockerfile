@@ -20,6 +20,8 @@ ENV PYTHONUNBUFFERED=1
 
 # pip performance flags
 ENV PIP_NO_CACHE_DIR=1
+ENV HF_HOME=/tmp/huggingface
+ENV TRANSFORMERS_CACHE=/tmp/huggingface
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Cloud Run injects PORT automatically
@@ -49,7 +51,7 @@ COPY app /app/app
 RUN mkdir -p /tmp/audio
 
 # ─── Create non-root user ──────────────────────────────────────────────────
-RUN useradd --no-create-home --shell /bin/false appuser \
+RUN useradd --create-home --shell /bin/false appuser \
     && chown -R appuser:appuser /app /tmp
 
 USER appuser
