@@ -74,7 +74,7 @@ def list_all_complaints(
 
 # ── GET /admin/complaints/{complaint_id} ──────────────────────────────────────
 
-@router.get("/complaints/{complaint_id}", response_model=AdminComplaintDetail)
+@router.get("/complaints/{complaint_id}")
 def get_complaint_detail(
     complaint_id: UUID,
     db: Session = Depends(get_db),
@@ -82,6 +82,7 @@ def get_complaint_detail(
 ):
     """
     Return a single complaint with full detail including AI fields.
+    Auto-generates AI resolution if not already present.
 
     Access: admin only.
     """
@@ -92,7 +93,49 @@ def get_complaint_detail(
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    return complaint
+    # Auto-generate resolution if not present
+    ai_resolution_full = None
+    if not complaint.ai_suggested_resolution:
+        try:
+            resolution_result = generate_resolution_for_complaint(
+                complaint_text=complaint.description,
+                category=complaint.category,
+                language="en"
+            )
+            complaint.ai_suggested_resolution = resolution_result.get("suggested_resolution")
+            complaint.ai_resolution_confidence = resolution_result.get("confidence")
+            complaint.estimated_resolution_days = resolution_result.get("estimated_resolution_days")
+            complaint.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            db.refresh(complaint)
+            ai_resolution_full = resolution_result
+        except Exception as e:
+            print(f"[AdminRoute] Auto-resolution failed: {e}")
+    else:
+        ai_resolution_full = {
+            "suggested_resolution": complaint.ai_suggested_resolution,
+            "confidence": complaint.ai_resolution_confidence,
+            "estimated_resolution_days": complaint.estimated_resolution_days,
+        }
+
+    return {
+        "id": str(complaint.id),
+        "reference_id": complaint.reference_id,
+        "user_id": str(complaint.user_id),
+        "title": complaint.title,
+        "description": complaint.description,
+        "status": complaint.status,
+        "category": complaint.category,
+        "assigned_department": complaint.assigned_department,
+        "priority_score": complaint.priority_score,
+        "ai_confidence": complaint.ai_confidence,
+        "duplicate_of": complaint.duplicate_of,
+        "resolution": complaint.resolution,
+        "resolution_approved": complaint.resolution_approved,
+        "created_at": complaint.created_at,
+        "updated_at": complaint.updated_at,
+        "ai_resolution": ai_resolution_full,
+    }
 
 @router.get("/complaints/{complaint_id}/resolution", response_model=dict)
 def get_or_generate_resolution(
@@ -121,7 +164,12 @@ def get_or_generate_resolution(
     
     # Auto-generate resolution
     try:
-        resolution = generate_resolution_for_complaint(complaint)
+        resolution_result = generate_resolution_for_complaint(
+            complaint_text=complaint.description,
+            category=complaint.category,
+            language="en"
+        )
+        resolution = resolution_result.get("suggested_resolution", "Resolution not available")
         complaint.resolution = resolution
         complaint.updated_at = datetime.now(timezone.utc)
         db.commit()

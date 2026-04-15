@@ -84,39 +84,47 @@ def assign_department(category: str) -> str:
 # ---------------- PRIORITY SCORING ----------------
 
 def calculate_priority(text: str, category: str) -> int:
-
+    """Calculate priority score 1-10 for banking complaints."""
     text = text.lower()
-
     score = 3
 
+    # High priority banking keywords (score +4)
     urgent_keywords = [
-        "hospital",
-        "emergency",
-        "fire",
-        "flood",
-        "accident",
-        "danger",
-        "injury"
+        "fraud", "unauthorized", "scam", "stolen", "hack",
+        "all money", "entire balance", "large amount", "lakhs",
+        "senior citizen", "elderly", "disabled", "widow",
+        "salary", "medical", "rent", "emergency"
     ]
 
+    # Medium priority banking keywords (score +2)
     medium_keywords = [
-        "no water",
-        "power outage",
-        "electricity",
-        "sewage",
-        "water leak"
+        "not received", "failed", "deducted", "missing",
+        "blocked", "frozen", "suspended", "rejected",
+        "double charge", "duplicate", "wrong account",
+        "atm", "card", "upi", "neft", "rtgs"
+    ]
+
+    # Low priority (score +1)
+    low_keywords = [
+        "interest rate", "statement", "passbook",
+        "kyc", "update", "change", "request"
     ]
 
     for word in urgent_keywords:
         if word in text:
-            score += 5
+            score += 4
 
     for word in medium_keywords:
         if word in text:
             score += 2
 
-    if category in ["Utilities", "Electricity"]:
-        score += 1
+    for word in low_keywords:
+        if word in text:
+            score += 1
+
+    # Fraud category always gets high priority
+    if category == "Fraud":
+        score += 3
 
     return min(score, 10)
 

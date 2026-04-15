@@ -1,9 +1,10 @@
+import os
 """conversation_routes.py
 Conversational Complaint Intake API endpoints.
 Supports natural language complaint filing with emotion detection.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -189,12 +190,246 @@ def get_resolution_for_user(
             "message": "Your complaint is being reviewed. Check back soon."
         }
     
+    # Get user's language from complaint description
+    from app.services.language_detector import detect_language
+    from app.services.translation_service import translate_text
+    
+    user_language = detect_language(complaint.description) if complaint.description else "en"
+    
+    # Use ai_suggested_resolution if admin resolution not set
+    resolution_text = complaint.resolution or complaint.ai_suggested_resolution or ""
+    
     # Filter to show only relevant fields
     filtered = get_citizen_friendly_resolution({
         "reference_id": complaint.reference_id,
         "title": complaint.title,
-        "resolution": complaint.resolution,
-        "timeline": complaint.resolution  # Extract timeline from resolution text
+        "resolution": resolution_text,
+        "timeline": resolution_text
     })
     
+    # Translate simplified resolution back to user language if not English
+    if user_language != "en" and filtered.get("resolution"):
+        try:
+            filtered["resolution"] = translate_text(
+                filtered["resolution"],
+                source_lang="en",
+                target_lang=user_language
+            )
+        except Exception as e:
+            print(f"[Resolution] Translation failed: {e}")
+    
     return filtered
+
+@router.get("/resolution/{reference_id}/audio")
+def get_resolution_audio(
+    reference_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get TTS audio of resolution + satisfaction question in user's language."""
+    from app.services.citizen_response_service import get_citizen_friendly_resolution, simplify_resolution
+    from app.services.language_detector import detect_language
+    from app.services.translation_service import translate_text
+    from app.services.tts_service import generate_tts
+
+    complaint = db.query(Complaint).filter(
+        Complaint.reference_id == reference_id,
+        Complaint.user_id == current_user.id
+    ).first()
+
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+
+    resolution_text = complaint.resolution or complaint.ai_suggested_resolution or ""
+    if not resolution_text:
+        raise HTTPException(status_code=404, detail="No resolution available yet")
+
+    user_language = detect_language(complaint.description) if complaint.description else "en"
+
+    # Simplify resolution
+    simplified = simplify_resolution(resolution_text)
+
+    # Translate to user language if needed
+    if user_language != "en":
+        try:
+            simplified = translate_text(simplified, source_lang="en", target_lang=user_language)
+        except Exception as e:
+            print(f"[ResolutionAudio] Translation failed: {e}")
+
+    # Generate satisfaction question dynamically in user's language using Gemini
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            generation_config={"temperature": 0.3, "max_output_tokens": 100}
+        )
+        r = model.generate_content(
+            f"Ask the user if they are satisfied with the resolution. "
+            f"Tell them to say Yes or No. Respond in {user_language} language only. "
+            f"Keep it to one short sentence."
+        )
+        satisfaction_q = r.text.strip()
+    except Exception:
+        satisfaction_q = "Are you satisfied with this resolution? Please say Yes or No." if user_language == "en" else "क्या आप इस समाधान से संतुष्ट हैं? हाँ या नहीं में जवाब दें।"
+
+    full_text = f"{simplified}. {satisfaction_q}"
+
+    audio = generate_tts(full_text, user_language)
+
+    return {
+        "reference_id": reference_id,
+        "resolution_text": simplified,
+        "satisfaction_question": satisfaction_q,
+        "language": user_language,
+        "audio": audio
+    }
+
+
+@router.post("/resolution/{reference_id}/feedback")
+async def submit_resolution_feedback(
+    reference_id: str,
+    file: object = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Submit voice feedback on resolution - YES resolves, NO escalates."""
+    from app.services.stt_service import transcribe_audio
+    from app.services.language_detector import detect_language
+    from app.services.tts_service import generate_tts
+    from app.services.translation_service import translate_text
+    from datetime import datetime, timezone
+
+    complaint = db.query(Complaint).filter(
+        Complaint.reference_id == reference_id,
+        Complaint.user_id == current_user.id
+    ).first()
+
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+
+    user_language = detect_language(complaint.description) if complaint.description else "en"
+
+    return {
+        "reference_id": reference_id,
+        "language": user_language,
+        "message": "Use /resolution/{reference_id}/feedback/voice to submit voice feedback"
+    }
+
+
+@router.post("/resolution/{reference_id}/feedback/voice")
+async def submit_voice_feedback(
+    reference_id: str,
+    file: UploadFile = File(default=None),
+    satisfied: str = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Submit voice or text feedback on resolution.
+    - file: audio file (WAV/MP3) with user saying yes/no
+    - satisfied: text override ('yes' or 'no') if no audio
+    """
+    from app.services.stt_service import transcribe_audio
+    from app.services.language_detector import detect_language
+    from app.services.tts_service import generate_tts
+    from app.services.translation_service import translate_text
+    from datetime import datetime, timezone
+
+    complaint = db.query(Complaint).filter(
+        Complaint.reference_id == reference_id,
+        Complaint.user_id == current_user.id
+    ).first()
+
+    if not complaint:
+        raise HTTPException(status_code=404, detail="Complaint not found")
+
+    user_language = detect_language(complaint.description) if complaint.description else "en"
+
+    # Get user response - from audio or text
+    user_response = ""
+    if file:
+        try:
+            audio_bytes = await file.read()
+            user_response = transcribe_audio(audio_bytes)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Audio transcription failed: {e}")
+    elif satisfied:
+        user_response = satisfied
+    else:
+        raise HTTPException(status_code=400, detail="Provide either audio file or satisfied parameter")
+
+    # Detect satisfaction
+    response_lower = user_response.lower().strip()
+    yes_keywords = ["yes", "हाँ", "हां", "ஆம்", "હા", "হ্যাঁ", "satisfied", "ok", "okay", "good", "fine", "correct", "ठीक"]
+    no_keywords = ["no", "नहीं", "இல்லை", "ના", "না", "not satisfied", "escalate", "wrong", "disagree"]
+
+    is_satisfied = any(kw in response_lower for kw in yes_keywords)
+    is_dissatisfied = any(kw in response_lower for kw in no_keywords)
+
+    if is_satisfied:
+        # Mark as RESOLVED
+        complaint.status = "RESOLVED"
+        complaint.resolution_approved = True
+        complaint.resolution_approved_by = str(current_user.id)
+        complaint.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel("gemini-2.5-flash", generation_config={"temperature": 0.3, "max_output_tokens": 100})
+            r = model.generate_content(f"Tell the user their complaint has been successfully resolved. Thank them. Respond in {user_language} language only. One sentence.")
+            msg = r.text.strip()
+        except Exception:
+            msg = "Thank you! Your complaint has been successfully resolved." if user_language == "en" else "धन्यवाद! आपकी शिकायत सफलतापूर्वक हल हो गई है।"
+        audio = generate_tts(msg, user_language)
+
+        return {
+            "status": "RESOLVED",
+            "message": msg,
+            "audio": audio,
+            "transcription": user_response
+        }
+
+    elif is_dissatisfied:
+        # Escalate to admin
+        complaint.status = "ESCALATED"
+        complaint.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel("gemini-2.5-flash", generation_config={"temperature": 0.3, "max_output_tokens": 100})
+            r = model.generate_content(f"Tell the user their complaint has been escalated to a senior officer who will contact them soon. Be empathetic. Respond in {user_language} language only. One sentence.")
+            msg = r.text.strip()
+        except Exception:
+            msg = "We understand. Your complaint has been escalated to a senior officer." if user_language == "en" else "हम समझते हैं। आपकी शिकायत उच्च अधिकारी को भेज दी गई है।"
+        audio = generate_tts(msg, user_language)
+
+        return {
+            "status": "ESCALATED",
+            "message": msg,
+            "audio": audio,
+            "transcription": user_response
+        }
+
+    else:
+        # Unclear response - ask again
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+            model = genai.GenerativeModel("gemini-2.5-flash", generation_config={"temperature": 0.3, "max_output_tokens": 50})
+            r = model.generate_content(f"Ask the user to please say Yes or No clearly. Respond in {user_language} language only.")
+            msg = r.text.strip()
+        except Exception:
+            msg = "Please say Yes or No." if user_language == "en" else "कृपया हाँ या नहीं में जवाब दें।"
+        audio = generate_tts(msg, user_language)
+
+        return {
+            "status": "UNCLEAR",
+            "message": msg,
+            "audio": audio,
+            "transcription": user_response
+        }

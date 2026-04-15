@@ -177,7 +177,7 @@ def detect_emotion(text: str) -> Optional[str]:
     
     return None
 
-def call_groq_llm(conversation_history: list, user_message: str, current_form: dict, form_config: Dict, required_fields: list) -> dict:
+def call_groq_llm(conversation_history: list, user_message: str, current_form: dict, form_config: Dict, required_fields: list, session_language: str = "en") -> dict:
     """Call Gemini LLM to process conversation and extract data intelligently."""
     
     missing_required = [field for field in required_fields if current_form.get(field) is None]
@@ -195,13 +195,9 @@ def call_groq_llm(conversation_history: list, user_message: str, current_form: d
     
     fields_text = "\n".join(field_info)
     
-    # Get next missing field with its question
-    next_field_question = ""
-    if missing_required:
-        next_missing = missing_required[0]
-        next_field_question = get_field_question(form_config, next_missing)
-    
     user_prompt = f"""You are helping fill out a {form_config['display_name']} complaint form.
+
+SESSION LANGUAGE: {session_language} - ALL your responses MUST be in {session_language} language only. Do NOT use English unless session_language is "en".
 
 FORM FIELDS DEFINITION:
 {fields_text}
@@ -213,19 +209,18 @@ CURRENT FORM STATUS:
 
 MISSING REQUIRED FIELDS: {', '.join(missing_required) if missing_required else 'NONE - ALL FIELDS COMPLETE!'}
 
-IF FIELDS MISSING, NEXT QUESTION SHOULD BE: "{next_field_question}"
-
 RULES FOR THIS BANK FORM:
 1. Extract data EXACTLY into the field names defined above
 2. Match user data to the SPECIFIC fields in this form
 3. Ask for ONE missing field at a time using natural conversational language
 4. When ALL required fields are filled, set is_complete to true
+5. CRITICAL: Respond in {session_language} language ONLY. Do NOT switch languages.
 
 Respond ONLY with valid JSON in this format:
 {{
   "empathy_message": "short empathetic response if user is distressed, else empty string",
   "extracted_data": {{"field_name": "value", ...}},
-  "next_question": "natural conversational question for ONE missing field, or empty if complete",
+  "next_question": "natural conversational question for ONE missing field in {session_language}, or empty if complete",
   "is_complete": false
 }}"""
     
@@ -233,30 +228,43 @@ Respond ONLY with valid JSON in this format:
         model = genai.GenerativeModel(
             model_name=MODEL_NAME,
             system_instruction=SYSTEM_PROMPT,
-            generation_config={"temperature": 0.7, "max_output_tokens": 500}
+            generation_config={
+                "temperature": 0.7,
+                "max_output_tokens": 500,
+                "response_mime_type": "application/json"
+            }
         )
         response = model.generate_content(user_prompt)
-        content = response.text.strip()
+        raw = response.text.strip()
         
-        # Parse JSON
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0].strip()
+        # Parse JSON - with response_mime_type set, Gemini returns pure JSON
+        import re as _re
+        # Remove any accidental markdown if present
+        raw = _re.sub(r"```json\s*", "", raw)
+        raw = _re.sub(r"```\s*", "", raw)
+        raw = raw.strip()
         
-        # Try to extract JSON if wrapped in other text
-        if '{' in content and '}' in content:
-            start = content.index('{')
-            end = content.rindex('}') + 1
-            content = content[start:end]
+        # Find matching braces properly
+        def _extract_json(text):
+            start = text.find("{")
+            if start == -1:
+                return text
+            depth = 0
+            for i, c in enumerate(text[start:], start):
+                if c == "{": depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i+1]
+            return text[start:]
         
-        parsed = json.loads(content)
+        parsed = json.loads(_extract_json(raw))
         print(f"[Gemini OK] extracted={parsed.get('extracted_data')}, next_q={parsed.get('next_question')}")
         return parsed
     
     except Exception as e:
         print(f"Gemini LLM error: {e}")
-        print(f"Raw content was: {content[:200] if 'content' in dir() else 'N/A'}")
+        print(f"Raw content was: {raw[:200] if 'raw' in dir() else 'N/A'}")
         if missing_required:
             next_field = missing_required[0]
             question = get_field_question(form_config, next_field)
@@ -291,11 +299,23 @@ def start_conversation(user_id: int, initial_text: str, language: str = None) ->
             "language_locked": False  # Only lock after confirmation
         }
         
-        empathy = ""
-        if emotion:
-            empathy = "I understand this must be frustrating. Don't worry — I'm here to help.\n\n"
-        
-        response = f"{empathy}Which bank was your transaction with?\n\nJust type the bank name (e.g., SBI, HDFC, ICICI)"
+        # Use Gemini to ask bank question in correct language
+        try:
+            model = genai.GenerativeModel(
+                model_name=MODEL_NAME,
+                system_instruction=SYSTEM_PROMPT,
+                generation_config={"temperature": 0.7, "max_output_tokens": 200}
+            )
+            bank_prompt = f"""The user said: "{initial_text}"
+They want to file a banking complaint but haven't mentioned a bank yet.
+Respond in {language} language.
+Ask them which bank was involved in the transaction - keep it short and conversational.
+If they seem distressed, acknowledge it first.
+Return ONLY the response text, no JSON."""
+            bank_response = model.generate_content(bank_prompt)
+            response = bank_response.text.strip()
+        except Exception:
+            response = "Which bank was your transaction with? Just type the bank name."
         
         conversation_sessions[user_id]["history"].append({"role": "assistant", "content": response})
         return response
@@ -319,7 +339,8 @@ def start_conversation(user_id: int, initial_text: str, language: str = None) ->
         "required_fields": required_fields,
         "history": [{"role": "user", "content": initial_text}],
         "emotion_detected": emotion,
-        "awaiting_bank_selection": False
+        "awaiting_bank_selection": False,
+        "detected_language": language
     }
     
     llm_response = call_groq_llm(
@@ -327,7 +348,8 @@ def start_conversation(user_id: int, initial_text: str, language: str = None) ->
         user_message=initial_text,
         current_form=form_template,
         form_config=form_config,
-        required_fields=required_fields
+        required_fields=required_fields,
+        session_language=language
     )
     
     # Update form with extracted data
@@ -378,7 +400,18 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
         detected_bank = detect_bank(user_answer)
         
         if not detected_bank:
-            response = "I didn't catch that. Which bank was this transaction from? Just type the bank name."
+            # Ask again in session language
+            lang = session.get("detected_language", "en")
+            try:
+                model = genai.GenerativeModel(
+                    model_name=MODEL_NAME,
+                    system_instruction=SYSTEM_PROMPT,
+                    generation_config={"temperature": 0.7, "max_output_tokens": 100}
+                )
+                r = model.generate_content(f"Ask the user again which bank was involved in their transaction. Respond in {lang} language only. Keep it short.")
+                response = r.text.strip()
+            except Exception:
+                response = "Which bank was your transaction with? Just type the bank name."
             session["history"].append({"role": "assistant", "content": response})
             return response
         
@@ -397,7 +430,17 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
         session["required_fields"] = get_required_fields(form_config)
         session["awaiting_bank_selection"] = False
         
-        response = f"Great! I've loaded the {form_config['display_name']} complaint form. Let's get started.\n\nWhat's your name?"
+        # Confirm bank loaded in session language - NO JSON system prompt
+        lang = session.get("detected_language", "en")
+        try:
+            plain_model = genai.GenerativeModel(
+                model_name=MODEL_NAME,
+                generation_config={"temperature": 0.7, "max_output_tokens": 150}
+            )
+            r = plain_model.generate_content(f"You are a helpful banking assistant. Tell the user you have loaded the {form_config['display_name']} complaint form and ask for their name. Respond in {lang} language only. Return ONLY the conversational message, no JSON, no formatting.")
+            response = r.text.strip()
+        except Exception:
+            response = f"I've loaded the {form_config['display_name']} complaint form. What's your name?"
         session["history"].append({"role": "assistant", "content": response})
         return response
     
@@ -406,7 +449,8 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
         user_message=user_answer,
         current_form=session["form"],
         form_config=session["form_config"],
-        required_fields=session["required_fields"]
+        required_fields=session["required_fields"],
+        session_language=session.get("detected_language", "en")
     )
     
     # Update form with extracted data
@@ -452,13 +496,25 @@ Amount: {form_data.get('amount') or 'Not provided'}"""
         # User wants to update
         elif user_response in ["no", "n", "update", "change"]:
             session["awaiting_confirmation"] = False
-            response = "No problem. Please tell me which detail needs to be corrected."
+            lang = session.get("detected_language", "en")
+            try:
+                model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT, generation_config={"temperature": 0.7, "max_output_tokens": 100})
+                r = model.generate_content(f"Tell the user no problem and ask which detail they want to correct. Respond in {lang} language only.")
+                response = r.text.strip()
+            except Exception:
+                response = "No problem. Please tell me which detail needs to be corrected."
             session["history"].append({"role": "assistant", "content": response})
             return response
         
         # Unclear response
         else:
-            response = "Please reply with YES to submit or NO to update the details."
+            lang = session.get("detected_language", "en")
+            try:
+                model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT, generation_config={"temperature": 0.7, "max_output_tokens": 100})
+                r = model.generate_content(f"Ask the user to reply YES to submit or NO to update. Respond in {lang} language only.")
+                response = r.text.strip()
+            except Exception:
+                response = "Please reply with YES to submit or NO to update the details."
             session["history"].append({"role": "assistant", "content": response})
             return response
     
