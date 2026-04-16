@@ -5,6 +5,7 @@ empathetic responses, and dynamic form loading from JSON files.
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, Optional, List
 import google.generativeai as genai
@@ -42,6 +43,12 @@ def create_empty_form(form_config: Dict) -> Dict:
 def get_required_fields(form_config: Dict) -> List[str]:
     """Get list of required field names from form configuration."""
     return [field["name"] for field in form_config["fields"] if field["required"]]
+
+def _clean_llm_text(text: str) -> str:
+    """Strip markdown code blocks from plain-text Gemini responses."""
+    text = re.sub(r"```[a-z]*\s*", "", text)
+    text = re.sub(r"```\s*", "", text)
+    return text.strip()
 
 def get_field_question(form_config: Dict, field_name: str) -> str:
     """Get the question text for a specific field."""
@@ -230,7 +237,7 @@ Respond ONLY with valid JSON in this format:
             system_instruction=SYSTEM_PROMPT,
             generation_config={
                 "temperature": 0.7,
-                "max_output_tokens": 500,
+                "max_output_tokens": 1024,
                 "response_mime_type": "application/json"
             }
         )
@@ -304,7 +311,7 @@ def start_conversation(user_id: int, initial_text: str, language: str = None) ->
             model = genai.GenerativeModel(
                 model_name=MODEL_NAME,
                 system_instruction=SYSTEM_PROMPT,
-                generation_config={"temperature": 0.7, "max_output_tokens": 200}
+                generation_config={"temperature": 0.7, "max_output_tokens": 512}
             )
             bank_prompt = f"""The user said: "{initial_text}"
 They want to file a banking complaint but haven't mentioned a bank yet.
@@ -313,7 +320,7 @@ Ask them which bank was involved in the transaction - keep it short and conversa
 If they seem distressed, acknowledge it first.
 Return ONLY the response text, no JSON."""
             bank_response = model.generate_content(bank_prompt)
-            response = bank_response.text.strip()
+            response = _clean_llm_text(bank_response.text)
         except Exception:
             response = "Which bank was your transaction with? Just type the bank name."
         
@@ -405,11 +412,10 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
             try:
                 model = genai.GenerativeModel(
                     model_name=MODEL_NAME,
-                    system_instruction=SYSTEM_PROMPT,
                     generation_config={"temperature": 0.7, "max_output_tokens": 100}
                 )
-                r = model.generate_content(f"Ask the user again which bank was involved in their transaction. Respond in {lang} language only. Keep it short.")
-                response = r.text.strip()
+                r = model.generate_content(f"Ask the user again which bank was involved in their transaction. Respond in {lang} language only. Keep it short. Plain text only.")
+                response = _clean_llm_text(r.text)
             except Exception:
                 response = "Which bank was your transaction with? Just type the bank name."
             session["history"].append({"role": "assistant", "content": response})
@@ -435,10 +441,10 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
         try:
             plain_model = genai.GenerativeModel(
                 model_name=MODEL_NAME,
-                generation_config={"temperature": 0.7, "max_output_tokens": 150}
+                generation_config={"temperature": 0.7, "max_output_tokens": 300}
             )
-            r = plain_model.generate_content(f"You are a helpful banking assistant. Tell the user you have loaded the {form_config['display_name']} complaint form and ask for their name. Respond in {lang} language only. Return ONLY the conversational message, no JSON, no formatting.")
-            response = r.text.strip()
+            r = plain_model.generate_content(f"You are a helpful banking assistant. In 2 short sentences in {lang} language, tell the user you loaded the {form_config['display_name']} form and ask their name. No JSON.")
+            response = _clean_llm_text(r.text)
         except Exception:
             response = f"I've loaded the {form_config['display_name']} complaint form. What's your name?"
         session["history"].append({"role": "assistant", "content": response})
@@ -467,7 +473,16 @@ def continue_conversation(user_id: int, user_answer: str) -> dict:
         user_response = user_answer.lower().strip()
         
         # User confirms
-        if user_response in ["yes", "y", "correct", "confirm", "ok", "okay"]:
+        # Detect yes in multiple languages
+        yes_words = ["yes", "y", "correct", "confirm", "ok", "okay", "submit", "bilkul", "theek",
+                     "हाँ", "हां", "हा", "ठीक", "सही", "हाँजी",
+                     "ஆம்", "ஆமாம்", "હા", "হ্যাঁ", "ਹਾਂ",
+                     "ہاں", "ہان", "جی", "سممٹ"]
+        no_words = ["no", "n", "update", "change", "nahi", "naa",
+                    "नहीं", "नही", "ना",
+                    "இல்லை", "ના", "না", "ਨਹੀਂ",
+                    "نہیں"]
+        if any(w in user_response for w in yes_words):
             form_data = session["form"]
             form_config = session["form_config"]
             
@@ -490,31 +505,27 @@ Amount: {form_data.get('amount') or 'Not provided'}"""
                 "complete": True,
                 "title": title,
                 "description": description,
-                "form_data": form_data
+                "form_data": form_data,
+                "user_language": session.get("detected_language", "en")
             }
         
         # User wants to update
-        elif user_response in ["no", "n", "update", "change"]:
+        elif any(w in user_response for w in no_words):
             session["awaiting_confirmation"] = False
             lang = session.get("detected_language", "en")
             try:
-                model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT, generation_config={"temperature": 0.7, "max_output_tokens": 100})
-                r = model.generate_content(f"Tell the user no problem and ask which detail they want to correct. Respond in {lang} language only.")
-                response = r.text.strip()
+                model = genai.GenerativeModel(model_name=MODEL_NAME, generation_config={"temperature": 0.7, "max_output_tokens": 100})
+                r = model.generate_content(f"Tell the user no problem and ask which detail they want to correct. Respond in {lang} language only. Plain text only, no JSON, no markdown.")
+                response = _clean_llm_text(r.text)
             except Exception:
                 response = "No problem. Please tell me which detail needs to be corrected."
             session["history"].append({"role": "assistant", "content": response})
             return response
         
-        # Unclear response
+        # Unclear response — static safe message, no LLM call
         else:
             lang = session.get("detected_language", "en")
-            try:
-                model = genai.GenerativeModel(model_name=MODEL_NAME, system_instruction=SYSTEM_PROMPT, generation_config={"temperature": 0.7, "max_output_tokens": 100})
-                r = model.generate_content(f"Ask the user to reply YES to submit or NO to update. Respond in {lang} language only.")
-                response = r.text.strip()
-            except Exception:
-                response = "Please reply with YES to submit or NO to update the details."
+            response = "कृपया हाँ या नहीं में जवाब दें।" if lang == "hi" else "Please reply YES to submit or NO to update."
             session["history"].append({"role": "assistant", "content": response})
             return response
     
@@ -525,21 +536,30 @@ Amount: {form_data.get('amount') or 'Not provided'}"""
         form_data = session["form"]
         form_config = session["form_config"]
         
-        # Generate confirmation message
-        confirmation_msg = f"""Let me confirm your complaint before submitting.
-
-Bank: {form_config['display_name']}
+        # Generate confirmation message in session language
+        lang = session.get("detected_language", "en")
+        form_summary = f"""Bank: {form_config['display_name']}
 Customer Name: {form_data.get('customer_name')}
 Mobile Number: {form_data.get('mobile_number')}
 Transaction Type: {form_data.get('transaction_type')}
-Amount: ₹{form_data.get('amount') or 'Not provided'}
+Amount: {form_data.get('amount') or 'Not provided'}
 Date: {form_data.get('transaction_date') or 'Not provided'}
 Transaction ID: {form_data.get('transaction_id') or 'Not provided'}
-Issue: {form_data.get('complaint_description')}
-
-Is this correct?
-
-Reply YES to submit or NO to update."""
+Issue: {form_data.get('complaint_description')}"""
+        try:
+            plain_model = genai.GenerativeModel(
+                model_name=MODEL_NAME,
+                generation_config={"temperature": 0.3, "max_output_tokens": 300}
+            )
+            r = plain_model.generate_content(
+                f"Summarize this complaint for confirmation in {lang} language. "
+                f"Show all the details clearly and ask if it is correct. "
+                f"Tell them to say yes to submit or no to update. "
+                f"Details:\n{form_summary}\n\nRespond in {lang} language only. Plain text only, no JSON, no markdown."
+            )
+            confirmation_msg = _clean_llm_text(r.text)
+        except Exception:
+            confirmation_msg = f"Please confirm your complaint details:\n\n{form_summary}\n\nIs this correct? Say YES to submit or NO to update."
         
         session["history"].append({"role": "assistant", "content": confirmation_msg})
         return confirmation_msg

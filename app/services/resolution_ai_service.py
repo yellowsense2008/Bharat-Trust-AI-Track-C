@@ -138,7 +138,7 @@ def _call_llm(prompt: str):
                 "Suggest resolutions grounded in past complaints and RBI regulations. "
                 "Be concise and professional."
             ),
-            generation_config={"temperature": 0.3, "max_output_tokens": 500}
+            generation_config={"temperature": 0.3, "max_output_tokens": 2048}
         )
 
         response = model.generate_content(prompt)
@@ -166,27 +166,28 @@ def generate_resolution(
         language = detect_language(complaint_text)
         print(f"[LanguageDetection] Detected language: {language}")
 
-    # Translate → English
+    # Translate → English (only the user's original text, not the full structured description)
+    complaint_text_for_llm = complaint_text
     if language != "en":
         try:
-            complaint_text = translate_text(
-                complaint_text,
-                source_lang=language,
-                target_lang="en",
-            )
+            # Only translate the part before --- if it exists
+            parts = complaint_text.split("---", 1)
+            translated_part = translate_text(parts[0].strip(), source_lang=language, target_lang="en")
+            complaint_text_for_llm = translated_part + ("\n" + "---" + parts[1] if len(parts) > 1 else "")
             print(f"[Translation] Complaint translated {language} → en")
         except Exception as e:
             print(f"[Translation] Failed: {e}")
+            complaint_text_for_llm = complaint_text
 
     # Find similar complaints
-    similar = find_similar_complaints(complaint_text, top_k=5)
+    similar = find_similar_complaints(complaint_text_for_llm, top_k=5)
 
     if not similar or (similar and similar[0]["similarity"] < 0.15):
         # Use Gemini for fallback
         fallback_prompt = f"""
 Given this banking complaint, suggest a professional resolution:
 
-{complaint_text}
+{complaint_text_for_llm}
 
 Provide:
 1. Resolution action
@@ -204,6 +205,7 @@ Keep it concise and customer-friendly."""
             "regulatory_reference": "RBI Ombudsman Guidelines",
             "similar_cases_count": 0,
             "source": "AI_Generated_Fallback",
+            "language": language,
         }
 
     # Build context
@@ -226,7 +228,7 @@ Regulatory Ref: {entry.get('regulatory_reference', 'N/A')}
 
     prompt = f"""
 Incoming Complaint:
-{complaint_text}
+{complaint_text_for_llm}
 
 Similar Cases:
 {context}
@@ -247,17 +249,6 @@ Be professional and customer-friendly."""
         resolution_text = similar[0]["entry"]["resolution"]
         source = similar[0]["entry"].get("source", "CPGRAMS_Historical")
 
-    # Translate back to user language
-    if language != "en":
-        try:
-            resolution_text = translate_text(
-                resolution_text,
-                source_lang="en",
-                target_lang=language,
-            )
-        except Exception as e:
-            print(f"[Translation] Resolution translation failed: {e}")
-
     return {
         "suggested_resolution": resolution_text,
         "confidence": round(confidence, 3),
@@ -271,6 +262,16 @@ Be professional and customer-friendly."""
             [s for s in similar if s["similarity"] > 0.3]
         ),
         "source": source,
+        "language": language,
+        "similar_cases_context": [
+            {
+                "complaint": s["entry"]["complaint_text"][:200],
+                "resolution": s["entry"]["resolution"][:200],
+                "timeline": s["entry"].get("resolution_timeline_days") or "N/A",
+                "similarity": round(s["similarity"], 3),
+            }
+            for s in similar[:3] if s["similarity"] > 0.2
+        ],
     }
 
 

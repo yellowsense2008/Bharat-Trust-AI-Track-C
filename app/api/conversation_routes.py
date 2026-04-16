@@ -120,6 +120,8 @@ def send_message(
                 title=result["title"],
                 description=result["description"]
             )
+            # Store user language in description metadata for resolution translation
+            user_language = result.get("user_language", "en")
             
             complaint = create_complaint(
                 complaint_data=complaint_data,
@@ -244,12 +246,18 @@ def get_resolution_audio(
     if not resolution_text:
         raise HTTPException(status_code=404, detail="No resolution available yet")
 
-    user_language = detect_language(complaint.description) if complaint.description else "en"
+    # Detect language only from the user's original text (before the --- separator)
+    raw_desc = complaint.description or ""
+    user_text = raw_desc.split("---")[0].strip()
+    user_language = detect_language(user_text) if user_text else "hi"
+    # Default to Hindi if detection falls back to English on short/mixed text
+    if user_language == "en" and any('\u0900' <= c <= '\u097F' for c in user_text):
+        user_language = "hi"
 
-    # Simplify resolution
+    # Simplify resolution (resolution is always stored in English)
     simplified = simplify_resolution(resolution_text)
 
-    # Translate to user language if needed
+    # Translate simplified resolution to user language
     if user_language != "en":
         try:
             simplified = translate_text(simplified, source_lang="en", target_lang=user_language)
@@ -308,7 +316,11 @@ async def submit_resolution_feedback(
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    user_language = detect_language(complaint.description) if complaint.description else "en"
+    raw_desc = complaint.description or ""
+    user_text = raw_desc.split("---")[0].strip()
+    user_language = detect_language(user_text) if user_text else "hi"
+    if user_language == "en" and any('\u0900' <= c <= '\u097F' for c in user_text):
+        user_language = "hi"
 
     return {
         "reference_id": reference_id,
@@ -344,7 +356,11 @@ async def submit_voice_feedback(
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found")
 
-    user_language = detect_language(complaint.description) if complaint.description else "en"
+    raw_desc = complaint.description or ""
+    user_text = raw_desc.split("---")[0].strip()
+    user_language = detect_language(user_text) if user_text else "hi"
+    if user_language == "en" and any('\u0900' <= c <= '\u097F' for c in user_text):
+        user_language = "hi"
 
     # Get user response - from audio or text
     user_response = ""

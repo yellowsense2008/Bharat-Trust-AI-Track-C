@@ -20,24 +20,26 @@ LANGUAGE_MAP = {
     Language.GUJARATI: "gu",
 }
 
+def _has_urdu_script(text: str) -> bool:
+    """Check if text contains Arabic/Urdu script characters."""
+    return any('\u0600' <= ch <= '\u06FF' for ch in text)
+
+
 def detect_language(text: str) -> str:
     """
     Detect language of input text.
-    Uses confidence score to avoid switching on mixed code-switching.
     Returns ISO language code.
+    Urdu script is mapped to 'hi' so Gemini always replies in Hindi.
     """
+    # Urdu script → treat as Hindi so AI responds in Hindi
+    if _has_urdu_script(text):
+        return "hi"
+
     try:
         lang = detector.detect_language_of(text)
-        
         if lang is None:
             return "en"
-        
-        detected_lang = LANGUAGE_MAP.get(lang, "en")
-        
-        # Lingua already handles code-switching well
-        # Trust its detection (it looks at probability across the text)
-        return detected_lang
-        
+        return LANGUAGE_MAP.get(lang, "en")
     except Exception:
         return "en"
 
